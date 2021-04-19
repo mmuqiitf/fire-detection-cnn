@@ -1,22 +1,19 @@
+import math
 import sys
 import cv2
-import numpy as np
-import math
-import xlsxwriter
 from konvolusi import convolve as conv
+import xlsxwriter
 from itertools import product
 import csv
+import numpy as np
+from scipy import signal
 from PyQt5 import QtCore, QtWidgets
 from PyQt5.QtCore import pyqtSlot
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import QDialog, QApplication, QMainWindow, QFileDialog
 from PyQt5.uic import loadUi
 from matplotlib import pyplot as plt
-
-import os
 import h5py
-import imutils
-from imutils import paths
 from keras.applications import xception
 from keras.preprocessing import image
 from tensorflow.keras.models import load_model
@@ -25,38 +22,15 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, confusion_matrix
 from sklearn.model_selection import train_test_split, RandomizedSearchCV
 from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
-
 import datetime as dt
-import numpy as np
 import pandas as pd
-
-import matplotlib.pyplot as plt
+from tqdm import tqdm
 import seaborn as sns
+import os
+
 plt.style.use('fivethirtyeight')
 sns.set_style('whitegrid')
 
-
-import os
-from keras.applications import xception
-from keras.preprocessing import image
-from mpl_toolkits.axes_grid1 import ImageGrid
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split, RandomizedSearchCV
-from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
-
-import cv2
-from scipy.stats import uniform
-
-from tqdm import tqdm
-
-
-from keras.models import Model, Sequential, save_model, load_model
-from keras.layers import LSTM, Activation, Dense, Dropout, Input, Embedding, Masking
-from keras.utils import np_utils, to_categorical
-
-# Mohamad Muqiit Faturrahman - 152018016
-# Rizkika Siti Syifa - 152018030
-# Siti Asy Syifa - 152018032
 
 class ShowImage(QMainWindow):
     def __init__(self):
@@ -65,93 +39,88 @@ class ShowImage(QMainWindow):
         self.image = None
         self.image_contrast = None
         self.image_output = None
+        self.image_flname = None
+        self.base_folder = 'fire-dataset'
+        self.data_folder = 'fire_dataset'
+        self.train_data_folder = 'fire_dataset/fire_images'
+        self.test_date_folder = 'fire_dataset/non_fire_images'
+        self.categories = ['fire_images', 'non_fire_images']
+        self.len_categories = len(self.categories)
+        self.image_count = {}
+        self.train_data = []
+        self.df = None
+        self.INPUT_SIZE = 255
+        self.X_train = None
         self.btnLoad.clicked.connect(self.loadClicked)
         self.btnSave.clicked.connect(self.saveClicked)
         self.btnIdentifikasi.clicked.connect(self.detectProcess)
-        self.actionMean_Filter.triggered.connect(self.meanClicked)
 
     @pyqtSlot()
     def loadClicked(self):
-        self.loadImage('fire_dataset/fire_images/fire.558.png')
-        # flname, filter = QFileDialog.getOpenFileName(self, 'Open File', 'C:\\', "Image Files (*.png *.jpg *.jpeg)")
-        # if flname:
-        #     self.loadImage(flname)
-        # else:
-        #     print('Invalid Image')
+        flname, filter = QFileDialog.getOpenFileName(self, 'Open File', 'C:\\', "Image Files (*.png *.jpg *.jpeg)")
+        if flname:
+            self.loadImage(flname)
+        else:
+            print('Invalid Image')
 
     def loadImage(self, flname):
         self.image = cv2.imread(flname, cv2.IMREAD_COLOR)
-        img = self.image
-        # self.exportCSV(img, 'array_image')
+        self.image_flname = flname
         self.displayImage()
 
-    def contrast(self, img):
-        contrast = 1.4
-        h, w = img.shape[:2]
-        for i in np.arange(h):
-            for j in np.arange(w):
-                a = img.item(i, j)
-                b = math.ceil(a * contrast)
-                if b > 255:
-                    b = 255
-                elif b < 0:
-                    b = 0
-                else:
-                    b = b
-                img.itemset((i, j), b)
-        self.image_contrast = img
-        cv2.imshow("Contrast", self.image_contrast)
+    def create_mask(self, image):
+        image_hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        lower_hsv = np.array([0, 0, 250])
+        upper_hsv = np.array([250, 255, 255])
+        mask = cv2.inRange(image_hsv, lower_hsv, upper_hsv)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        return mask
 
-    def meanClicked(self):
-        img = self.image
+    # image segmentation function
+    def segment_image(self, image):
+        mask = self.create_mask(image)
+        output = cv2.bitwise_and(image, image, mask=mask)
+        return output / 255
+
+    # sharpen the image
+    def sharpen_image(self, image):
         kernel = np.ones((3, 3), np.float32) / 9
-        mean = cv2.filter2D(self.image, -1, kernel)
-        self.image = mean
-        cv2.imshow("Mean", mean)
-        cv2.imshow("Original Image", img)
+        image_filter = cv2.filter2D(image, -1, kernel)
+        return image_filter
 
     def detectProcess(self):
-        print("Process")
-        print("[INFO] loading model...")
-        model = load_model("model/model.h5")
-
-        # grab the paths to the fire and non-fire images, respectively
-        print("[INFO] predicting...")
-        firePaths = list(paths.list_images(os.path.sep.join(["fire_dataset", "fire_images"])))
-        nonFirePaths = list(paths.list_images(os.path.sep.join(["fire_dataset", "non_fire_images"])))
-
-        # combine the two image path lists, randomly shuffle them, and sample
-        # them
-        imagePaths = firePaths + nonFirePaths
-        random.shuffle(imagePaths)
-        imagePaths = imagePaths[:50]
-
-        # loop over the sampled image paths
-        for (i, imagePath) in enumerate(imagePaths):
-            # load the image and clone it
-            image = cv2.imread(imagePath)
-            output = image.copy()
-            # resize the input image to be a fixed 128x128 pixels, ignoring
-            # aspect ratio
-            image = cv2.resize(image, (128, 128))
-            image = image.astype("float32") / 255.0
-            image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-            # make predictions on the image
-            preds = model.predict(np.expand_dims(image, axis=0))[0]
-            j = np.argmax(preds)
-            CLASSES = ["Non-Fire", "Fire"]
-            label = CLASSES[j]
-            # draw the activity on the output frame
-            text = label if label == "Non-Fire" else "WARNING! Fire!"
-            output = imutils.resize(output, width=500)
-            cv2.putText(output, text, (35, 50), cv2.FONT_HERSHEY_SIMPLEX,
-                        1.25, (0, 255, 0), 5)
-
-            # write the output image to disk
-            filename = "{}.png".format(i)
-            p = os.path.sep.join([os.path.sep.join(["output", "fire_images"]), filename])
-            cv2.imwrite(p, output)
-
+        img = image.load_img(self.image_flname, target_size=(
+            self.INPUT_SIZE, self.INPUT_SIZE))
+        # convert image to array
+        img = image.img_to_array(img)
+        print(img)
+        # masking and segmentation
+        image_segmented = self.segment_image(img)
+        # sharpen
+        image_sharpen = self.sharpen_image(image_segmented)
+        x = xception.preprocess_input(
+            np.expand_dims(image_sharpen.copy(), axis=0))
+        loaded_model = load_model('./saved_model')
+        xception_bf = xception.Xception(
+            weights='imagenet', include_top=False, pooling='avg')
+        bf_train_x = xception_bf.predict(x, batch_size=32, verbose=1)
+        predictions = loaded_model.predict_classes(bf_train_x)
+        if predictions == 0:
+            print("Predictions : ", predictions, " is Fire!")
+        elif predictions == 1:
+            print("Predictions : ", predictions, " is Non-Fire")
+        label = "Fire" if predictions == 0 else "Non-Fire"
+        color = (0, 0, 255) if predictions == 0 else (0, 255, 0)
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        org = (50, 50)
+        fontScale = 1.5
+        thickness = 2
+        cv2.putText(self.image, label, org, font, fontScale,
+                    color, thickness, cv2.LINE_AA)
+        self.displayImage(2)
+        cv2.imshow("Image Masking", image_sharpen)
+        cv2.waitKey(0)
 
     def exportXLSX(self, array, flname):
         workbook = xlsxwriter.Workbook(str(flname) + '.xlsx')

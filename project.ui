@@ -459,7 +459,7 @@
    </font>
   </property>
   <property name="windowTitle">
-   <string>Pendeteksi Kebakaran Hutan</string>
+   <string>Fire Detection</string>
   </property>
   <property name="styleSheet">
    <string notr="true">background-color: rgb(196, 122, 83);</string>
